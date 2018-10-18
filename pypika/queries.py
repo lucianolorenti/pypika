@@ -1,26 +1,10 @@
 # coding: utf8
-from pypika.enums import (
-    JoinType,
-    UnionType,
-)
-from pypika.utils import (
-    JoinException,
-    RollupException,
-    UnionException,
-    alias_sql,
-    builder,
-    ignore_copy,
-)
-from .terms import (
-    ArithmeticExpression,
-    Field,
-    Function,
-    Rollup,
-    Star,
-    Term,
-    Tuple,
-    ValueWrapper,
-)
+from pypika.enums import JoinType, UnionType
+from pypika.utils import (JoinException, RollupException, UnionException,
+                          alias_sql, builder, ignore_copy)
+
+from .terms import (ArithmeticExpression, Field, Function, Rollup, Star, Term,
+                    Tuple, ValueWrapper)
 
 __author__ = "Timothy Heys"
 __email__ = "theys@kayak.com"
@@ -50,7 +34,7 @@ class Table(Selectable):
 
     def get_sql(self, quote_char=None, **kwargs):
         # FIXME escape
-
+        quote_char = None
         if self._schema:
             table_sql = "{quote}{schema}{quote}.{quote}{name}{quote}".format(
                   schema=self._schema,
@@ -63,8 +47,10 @@ class Table(Selectable):
                   name=self._table_name,
                   quote=quote_char or ''
             )
-
-        return alias_sql(table_sql, self.alias, quote_char)
+        if kwargs.get('with_alias', True):
+            return alias_sql(table_sql, self.alias, quote_char)
+        else:
+            return table_sql
 
     def __str__(self):
         return self.get_sql(quote_char='"')
@@ -95,7 +81,6 @@ class Table(Selectable):
 
     def __hash__(self):
         return hash(str(self))
-
 
 def make_tables(*names, **kwargs):
     return [Table(name, schema=kwargs.get('schema')) for name in names]
@@ -174,6 +159,11 @@ class Query(object):
         :returns QueryBuilder
         """
         return cls._builder().update(table)
+
+    @classmethod
+    def with_(cls, table, name):
+        return cls._builder().with_(table, name)
+    
 
 
 class _UnionQuery(Selectable, Term):
@@ -302,6 +292,8 @@ class QueryBuilder(Selectable, Term):
         self._update_table = None
         self._delete_from = False
 
+        self._with = []
+
         self._selects = []
         self._columns = []
         self._values = []
@@ -341,6 +333,11 @@ class QueryBuilder(Selectable, Term):
                 newone.__dict__[key] = type(value)(x for x in value)
         return newone
 
+    @builder
+    def with_(self, selectable, name):
+        self._with.append(
+            Table(selectable, alias=name))
+    
     @builder
     def from_(self, selectable):
         """
@@ -671,7 +668,7 @@ class QueryBuilder(Selectable, Term):
         kwargs['with_namespace'] = any((has_joins, has_multiple_from_clauses, has_subquery_from_clause))
 
         if self._update_table:
-            querystring = self._update_sql(**kwargs)
+            querystring += self._update_sql(**kwargs)
 
             if self._joins:
                 querystring += " " + " ".join(join.get_sql(**kwargs)
@@ -700,7 +697,13 @@ class QueryBuilder(Selectable, Term):
                 querystring += ' ' + self._select_sql(**kwargs)
 
         else:
-            querystring = self._select_sql(**kwargs)
+            if self._with:
+                querystring = self._with_sql(**kwargs)
+            else:
+                querystring = ''
+
+
+            querystring += self._select_sql(**kwargs)
 
             if self._insert_table:
                 querystring += self._into_sql(**kwargs)
@@ -789,6 +792,15 @@ class QueryBuilder(Selectable, Term):
               table=self._insert_table.get_sql(with_alias=False, **kwargs),
         )
 
+    def _with_sql(self, with_namespace=False, **kwargs):
+        return 'WITH ' + ','.join(
+            clause.alias + ' AS (' + clause.get_sql(
+                subquery=True,
+                with_alias=False,
+                **kwargs) +
+            ') ' 
+            for clause in self._with)
+    
     def _from_sql(self, with_namespace=False, **kwargs):
         return ' FROM {selectable}'.format(selectable=','.join(
               clause.get_sql(subquery=True, with_alias=True, **kwargs)
